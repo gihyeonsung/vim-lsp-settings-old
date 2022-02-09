@@ -2,6 +2,17 @@
 
 set -e
 
+# On MacOS, use clangd in Command Line Tools for Xcode.
+if command -v xcrun 2>/dev/null && xcrun --find clangd 2>/dev/null; then
+  cat <<'EOF' >clangd
+#!/usr/bin/env bash
+
+exec xcrun --run clangd "$@"
+EOF
+  chmod +x clangd
+  exit
+fi
+
 if command -v lsb_release 2>/dev/null; then
   distributor_id=$(lsb_release -a 2>&1 | grep 'Distributor ID' | awk '{print $3}')
 elif [ -e /etc/fedora-release ]; then
@@ -70,6 +81,7 @@ filename() {
       ;;
     11.0.0)
       local platform="linux-sles12.4"
+      ;;
     esac
     ;;
   esac
@@ -93,10 +105,10 @@ url_v10="https://github.com/llvm/llvm-project/releases/download/llvmorg-10.0.0/$
 filename_v11="$(filename "$distributor_id" '11.0.0')"
 url_v11="https://github.com/llvm/llvm-project/releases/download/llvmorg-11.0.0/$filename_v11.tar.xz"
 
-response_code=$(curl -sIL ${url_v11} -o /dev/null -w "%{response_code}")
+response_code=$(curl -sIL "${url_v11}" -o /dev/null -w "%{response_code}")
 
 if [ "${response_code}" == "404" ]; then
-  response_code=$(curl -sIL ${url_v10} -o /dev/null -w "%{response_code}")
+  response_code=$(curl -sIL "${url_v10}" -o /dev/null -w "%{response_code}")
 
   if [ "${response_code}" == "404" ]; then
     url="${url_v9}"
@@ -111,6 +123,6 @@ else
 fi
 
 echo "Downloading clangd and LLVM..."
-curl -L "$url" | unxz | tar x --strip-components=1 $filename/
+curl -L "$url" | unxz | tar x --strip-components=1 "$filename"/
 ln -sf bin/clangd .
 ./clangd --version

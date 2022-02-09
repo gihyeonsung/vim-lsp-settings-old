@@ -1,7 +1,7 @@
-let s:settings_dir = expand('<sfile>:h:h') . '/settings'
-let s:checkers_dir = expand('<sfile>:h:h') . '/checkers'
-let s:installer_dir = expand('<sfile>:h:h') . '/installer'
 let s:root_dir = expand('<sfile>:h:h')
+let s:settings_dir = s:root_dir . '/settings'
+let s:checkers_dir = s:root_dir . '/checkers'
+let s:installer_dir = s:root_dir . '/installer'
 
 if has('win32')
   let s:data_dir = expand('$LOCALAPPDATA/vim-lsp-settings')
@@ -12,7 +12,7 @@ else
 endif
 let s:servers_dir = s:data_dir . '/servers'
 
-let s:settings = json_decode(join(readfile(expand('<sfile>:h:h') . '/settings.json'), "\n"))
+let s:settings = json_decode(join(readfile(s:root_dir . '/settings.json'), "\n"))
 call remove(s:settings, '$schema')
 
 let s:ftmap = {}
@@ -37,7 +37,7 @@ function! lsp_settings#global_settings_dir() abort
   return substitute(l:path, '[\/]$', '', '')
 endfunction
 
-function! lsp_settings#intalled_servers() abort
+function! lsp_settings#installed_servers() abort
   let l:servers = []
   for l:ft in sort(keys(s:settings))
     for l:conf in s:settings[l:ft]
@@ -83,19 +83,50 @@ function! s:vim_lsp_installer(ft, ...) abort
   if !has_key(s:settings, l:ft)
     return []
   endif
-  let l:server = s:settings[l:ft]
-  if empty(l:server)
+  let l:servers = s:settings[l:ft]
+  if empty(l:servers)
     return []
   endif
   if l:ft !=# '_'
-    let l:server += s:settings['_']
+    let l:servers += s:settings['_']
   endif
 
+  let l:default = get(g:, 'lsp_settings_filetype_' . a:ft, '')
+
   let l:name = get(a:000, 0, '')
-  for l:conf in l:server
+  for l:conf in l:servers
     if !empty(l:name) && l:conf.command != l:name
       continue
     endif
+
+    if lsp_settings#get(l:conf.command, 'disabled', get(l:conf, 'disabled', 0))
+      if !empty(l:name) && l:conf.command == l:name
+        call lsp_settings#utils#warning(l:name . ' requested but is disabled by global or local settings')
+      endif
+      continue
+    endif
+
+    if type(l:default) ==# v:t_list
+      if len(l:default) ># 0 && index(l:default, l:conf.command) == -1
+        if !empty(l:name) && l:conf.command == l:name
+          call lsp_settings#utils#warning(l:name . ' requested but is disabled by g:lsp_settings_filetype_' . a:ft)
+        endif
+        continue
+      endif
+    elseif type(l:default) ==# v:t_string
+      if !empty(l:default) && l:default != l:conf.command
+        if !empty(l:name) && l:conf.command == l:name
+          call lsp_settings#utils#warning(l:name . ' requested but is disabled by g:lsp_settings_filetype_' . a:ft)
+        endif
+        continue
+      endif
+    else
+      if !empty(l:name) && l:conf.command == l:name
+        call lsp_settings#utils#warning(l:name . ' requested but is disabled by g:lsp_settings_filetype_' . a:ft)
+      endif
+      continue
+    endif
+
     let l:command = printf('%s/install-%s', s:installer_dir, l:conf.command)
     if has('win32')
       let l:command = substitute(l:command, '/', '\', 'g') . '.cmd'
@@ -129,6 +160,14 @@ function! lsp_settings#server_config(name) abort
     endfor
   endfor
   return {}
+endfunction
+
+function! lsp_settings#merge(name, key, default) abort
+  let l:config = lsp_settings#get(a:name, a:key, {})
+  if type(a:default) ==# v:t_func
+    return extend(l:config, a:default(a:name, a:key))
+  endif
+  return lsp_settings#utils#extend(l:config, a:default)
 endfunction
 
 function! lsp_settings#get(name, key, default) abort
@@ -188,10 +227,11 @@ function! lsp_settings#exec_path(cmd) abort
   if type(l:paths) == type([])
     let l:paths = join(l:paths, ',') . ','
   endif
-  let l:paths .= lsp_settings#servers_dir() . '/' . a:cmd
   if !has('win32')
+    let l:paths .= lsp_settings#servers_dir() . '/' . a:cmd
     return lsp_settings#utils#first_one(globpath(l:paths, a:cmd, 1))
   endif
+  let l:paths .= lsp_settings#servers_dir() . '\' . a:cmd
   for l:ext in ['.exe', '.cmd', '.bat']
     let l:path = globpath(l:paths, a:cmd . l:ext, 1)
     if !empty(l:path)
@@ -298,6 +338,9 @@ function! s:vim_lsp_uninstall_server(command) abort
   endif
   call lsp_settings#utils#msg('Uninstalling ' . a:command)
   let l:server_install_dir = lsp_settings#servers_dir() . '/' . a:command
+  if has('win32')
+     let l:server_install_dir = substitute(l:server_install_dir, '/', '\', 'g')
+  endif
   if !isdirectory(l:server_install_dir)
     call lsp_settings#utils#error('Server not found')
     return
@@ -327,11 +370,16 @@ function! s:vim_lsp_install_server_post(command, job, code, ...) abort
   call lsp_settings#utils#msg('Installed ' . a:command)
 endfunction
 
+function! lsp_settings#install_server(ft, command) abort
+  call s:vim_lsp_install_server(a:ft, a:command, '!')
+endfunction
+
 function! s:vim_lsp_install_server(ft, command, bang) abort
   if !empty(a:command) && !lsp_settings#utils#valid_name(a:command)
     call lsp_settings#utils#error('Invalid server name')
     return
   endif
+  call lsp#stop_server(a:command)
   let l:entry = s:vim_lsp_installer(a:ft, a:command)
   if empty(l:entry)
     call lsp_settings#utils#error('Server not found')
@@ -345,6 +393,9 @@ function! s:vim_lsp_install_server(ft, command, bang) abort
     return
   endif
   let l:server_install_dir = lsp_settings#servers_dir() . '/' . l:entry[0]
+  if has('win32')
+    let l:server_install_dir = substitute(l:server_install_dir, '/', '\', 'g')
+  endif
   if isdirectory(l:server_install_dir)
     call lsp_settings#utils#msg('Uninstalling ' . l:entry[0])
     call delete(l:server_install_dir, 'rf')
@@ -353,9 +404,9 @@ function! s:vim_lsp_install_server(ft, command, bang) abort
   call lsp_settings#utils#msg('Installing ' . l:entry[0])
   if has('nvim')
     split new
-    call termopen(l:entry[1], {'cwd': l:server_install_dir, 'on_exit': function('s:vim_lsp_install_server_post', [l:entry[0]])}) | startinsert
+    call termopen([l:entry[1]], {'cwd': l:server_install_dir, 'on_exit': function('s:vim_lsp_install_server_post', [l:entry[0]])}) | startinsert
   else
-    let l:bufnr = term_start(l:entry[1], {'cwd': l:server_install_dir})
+    let l:bufnr = term_start([l:entry[1]], {'cwd': l:server_install_dir})
     let l:job = term_getjob(l:bufnr)
     if l:job != v:null
       call job_setoptions(l:job, {'exit_cb': function('s:vim_lsp_install_server_post', [l:entry[0]])})
